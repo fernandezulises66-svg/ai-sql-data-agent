@@ -1,0 +1,5 @@
+# Minimal dependencies for the initial project scaffold.
+# Additional dependencies (OpenAI SDK, Streamlit, etc.) will be
+# added in later iterations as those features are implemented.
+
+pytest>=8.0
