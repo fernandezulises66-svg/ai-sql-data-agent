@@ -281,6 +281,49 @@ Example questions to try:
 The agent discovers every answer through SQL at run time — no answers or
 seeded-data results are hardcoded into its instructions.
 
+### Observability / debug mode
+
+Every call to the `run_sql_query` tool is recorded as a lightweight
+`SQLToolCallRecord` (`agent/data_analyst_agent.py`): the query text,
+whether it succeeded, `row_count`, `truncated`, `execution_time_ms`
+(measured with `time.perf_counter()` in `tools/sql_tool.py`), and the
+error message if it failed. It deliberately never records API keys,
+environment secrets, or the actual returned row data — just call
+metadata, so you can see *how* the agent used the database without
+exposing anything sensitive.
+
+`ask_data_agent(question)` still returns just the answer string, unchanged.
+For the full picture, `run_data_agent(question)` returns an `AgentAnswer`
+with both `.answer` and `.tool_calls`.
+
+Run the CLI with `--debug` to print that tool activity after each answer:
+
+```bash
+python app.py --debug
+```
+
+```
+Ask a question:
+> Which product generated the most revenue?
+
+The Ergonomic Office Chair generated the most revenue.
+
+SQL executed:
+SELECT p.name, SUM(oi.quantity * oi.unit_price) AS revenue
+FROM order_items oi JOIN products p ON p.id = oi.product_id
+GROUP BY p.id ORDER BY revenue DESC LIMIT 1
+
+Rows returned: 1
+Truncated: False
+Execution time: 2.4 ms
+```
+
+Normal mode (no `--debug`) prints only the final business answer, never
+the SQL. Debug output only ever shows *observable tool activity* — the
+query text and its outcome — never the model's internal reasoning or
+chain-of-thought, which the OpenAI Agents SDK does not expose to this
+application in the first place.
+
 Run the test suite:
 
 ```bash

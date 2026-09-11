@@ -186,6 +186,29 @@ def test_results_contain_column_names(seeded_db_path):
 
 
 # ---------------------------------------------------------------------------
+# execute_read_only_query: execution time metadata (observability)
+# ---------------------------------------------------------------------------
+
+
+def test_execution_time_ms_is_present_and_non_negative(seeded_db_path):
+    result = execute_read_only_query(
+        "SELECT * FROM customers", database_path=seeded_db_path
+    )
+    assert "execution_time_ms" in result
+    assert isinstance(result["execution_time_ms"], float)
+    assert result["execution_time_ms"] >= 0
+
+
+def test_execution_time_ms_does_not_replace_existing_fields(seeded_db_path):
+    result = execute_read_only_query(
+        "SELECT * FROM customers", database_path=seeded_db_path
+    )
+    assert set(result.keys()) == {
+        "columns", "rows", "row_count", "truncated", "execution_time_ms",
+    }
+
+
+# ---------------------------------------------------------------------------
 # execute_read_only_query: max_rows truncation
 # ---------------------------------------------------------------------------
 

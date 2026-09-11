@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from dotenv import load_dotenv
@@ -52,6 +54,32 @@ class AgentConfigError(AgentError):
 
 class AgentRuntimeError(AgentError):
     """Raised when the agent/OpenAI API fails while answering a question."""
+
+
+@dataclass
+class SQLToolCallRecord:
+    """Observability metadata for one run_sql_query tool call.
+
+    Captures only what's needed to see how the agent used the SQL tool:
+    the query text and outcome metadata. Deliberately does not capture
+    the actual returned rows/columns (only row_count), API keys,
+    environment secrets, or any other internal SDK data.
+    """
+
+    query: str
+    success: bool
+    execution_time_ms: float
+    row_count: int | None = None
+    truncated: bool | None = None
+    error: str | None = None
+
+
+@dataclass
+class AgentAnswer:
+    """Result of run_data_agent(): the final answer plus SQL tool activity."""
+
+    answer: str
+    tool_calls: list[SQLToolCallRecord] = field(default_factory=list)
 
 
 def _get_openai_api_key() -> str:
@@ -124,22 +152,59 @@ def _build_instructions(database_path: str | None) -> str:
     return INSTRUCTIONS_TEMPLATE.format(schema_text=schema_text)
 
 
-def _run_sql_query_impl(query: str, database_path: str | None) -> dict[str, Any]:
+def _run_sql_query_impl(
+    query: str,
+    database_path: str | None,
+    tool_calls: list[SQLToolCallRecord] | None = None,
+) -> dict[str, Any]:
     """Implementation behind the run_sql_query tool, kept plain for tests.
 
     Delegates entirely to tools.sql_tool.execute_read_only_query; no SQL
     validation is reimplemented here. A rejected/failed query is returned
     to the model as {"error": "..."} instead of raising, so the model can
     see what went wrong and adjust its next query.
+
+    When tool_calls is provided, one SQLToolCallRecord for this call is
+    appended to it — the project's only SQL tool observability hook.
+    Existing callers that pass just (query, database_path) are unaffected.
     """
+    start_time = time.perf_counter()
     try:
-        return execute_read_only_query(query, database_path=database_path)
+        result = execute_read_only_query(query, database_path=database_path)
     except SQLToolError as exc:
+        if tool_calls is not None:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            tool_calls.append(
+                SQLToolCallRecord(
+                    query=query,
+                    success=False,
+                    execution_time_ms=round(elapsed_ms, 3),
+                    error=str(exc),
+                )
+            )
         return {"error": str(exc)}
 
+    if tool_calls is not None:
+        tool_calls.append(
+            SQLToolCallRecord(
+                query=query,
+                success=True,
+                execution_time_ms=result["execution_time_ms"],
+                row_count=result["row_count"],
+                truncated=result["truncated"],
+            )
+        )
+    return result
 
-def _build_run_sql_query_tool(database_path: str | None):
-    """Create the run_sql_query function tool bound to database_path."""
+
+def _build_run_sql_query_tool(
+    database_path: str | None, tool_calls: list[SQLToolCallRecord] | None
+):
+    """Create the run_sql_query function tool bound to database_path.
+
+    Each call this tool makes is recorded into tool_calls, if provided
+    (see _run_sql_query_impl).
+    """
 
     @function_tool
     def run_sql_query(query: str) -> dict[str, Any]:
@@ -155,20 +220,28 @@ def _build_run_sql_query_tool(database_path: str | None):
         Args:
             query: A single read-only SQLite SELECT (or WITH ... SELECT) statement.
         """
-        return _run_sql_query_impl(query, database_path)
+        return _run_sql_query_impl(query, database_path, tool_calls)
 
     return run_sql_query
 
 
-def build_data_analyst_agent(database_path: str | None = None) -> Agent:
+def build_data_analyst_agent(
+    database_path: str | None = None,
+    *,
+    tool_calls: list[SQLToolCallRecord] | None = None,
+) -> Agent:
     """Build an Agent wired to the live database schema and the safe SQL tool.
+
+    tool_calls, if provided, is the list this agent's run_sql_query tool
+    will record a SQLToolCallRecord into on every call (see
+    run_data_agent()); callers that don't need this can ignore it.
 
     Raises SchemaToolError if the database can't be read, or
     AgentConfigError if it has no application tables to analyze. Does
     not require OPENAI_API_KEY or make any network call.
     """
     instructions = _build_instructions(database_path)
-    run_sql_query_tool = _build_run_sql_query_tool(database_path)
+    run_sql_query_tool = _build_run_sql_query_tool(database_path, tool_calls)
 
     return Agent(
         name=AGENT_NAME,
@@ -178,21 +251,35 @@ def build_data_analyst_agent(database_path: str | None = None) -> Agent:
     )
 
 
-def ask_data_agent(question: str, database_path: str | None = None) -> str:
+def run_data_agent(question: str, database_path: str | None = None) -> AgentAnswer:
     """Run a natural-language business question through the data analyst agent.
 
-    Builds the agent (dynamic schema + safe SQL tool) and runs it via the
-    OpenAI Agents SDK, returning the final text answer. Raises
-    AgentConfigError for missing configuration, SchemaToolError for
-    database problems, and AgentRuntimeError for agent/API failures — all
-    with a clean message, never a raw SDK traceback.
+    Like ask_data_agent(), but also returns the SQLToolCallRecords for
+    every run_sql_query call the agent made while answering — this is
+    what the CLI's --debug mode (see app.py) uses to show SQL tool
+    activity. Most callers that only need the text answer should use
+    ask_data_agent() instead.
+
+    Raises AgentConfigError for missing configuration, SchemaToolError
+    for database problems, and AgentRuntimeError for agent/API failures —
+    all with a clean message, never a raw SDK traceback.
     """
     _get_openai_api_key()
-    agent = build_data_analyst_agent(database_path)
+    tool_calls: list[SQLToolCallRecord] = []
+    agent = build_data_analyst_agent(database_path, tool_calls=tool_calls)
 
     try:
         result = Runner.run_sync(agent, question)
     except Exception as exc:
         raise AgentRuntimeError(f"The agent could not complete this request: {exc}") from exc
 
-    return result.final_output
+    return AgentAnswer(answer=result.final_output, tool_calls=tool_calls)
+
+
+def ask_data_agent(question: str, database_path: str | None = None) -> str:
+    """Run a natural-language business question and return only the answer.
+
+    A convenience wrapper around run_data_agent() for callers that don't
+    need SQL tool-call metadata.
+    """
+    return run_data_agent(question, database_path).answer

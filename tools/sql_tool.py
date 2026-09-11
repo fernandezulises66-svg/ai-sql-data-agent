@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -220,10 +221,15 @@ def execute_read_only_query(
             "rows": [...],
             "row_count": 10,
             "truncated": False,
+            "execution_time_ms": 2.4,
         }
 
     ``rows`` is capped at ``max_rows`` (default 100); ``truncated`` is
     True when more rows were available than were returned.
+    ``execution_time_ms`` covers only the actual statement execution and
+    row fetch (not connection setup), measured with
+    ``time.perf_counter()``, for lightweight observability into query
+    performance.
     """
     if max_rows <= 0:
         raise SQLValidationError("max_rows must be a positive integer.")
@@ -232,6 +238,7 @@ def execute_read_only_query(
 
     connection = get_read_only_connection(database_path)
     try:
+        start_time = time.perf_counter()
         try:
             cursor = connection.execute(validated_query)
         except (sqlite3.OperationalError, sqlite3.ProgrammingError) as exc:
@@ -244,6 +251,7 @@ def execute_read_only_query(
         # Fetch one extra row (never returned) so truncation can be
         # detected without pulling an unbounded result set into memory.
         fetched = cursor.fetchmany(max_rows + 1)
+        execution_time_ms = (time.perf_counter() - start_time) * 1000
         truncated = len(fetched) > max_rows
         rows = [tuple(row) for row in fetched[:max_rows]]
 
@@ -252,6 +260,7 @@ def execute_read_only_query(
             "rows": rows,
             "row_count": len(rows),
             "truncated": truncated,
+            "execution_time_ms": round(execution_time_ms, 3),
         }
     finally:
         connection.close()

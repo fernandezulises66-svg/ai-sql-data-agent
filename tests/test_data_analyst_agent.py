@@ -14,9 +14,11 @@ import agent.data_analyst_agent as data_analyst_agent
 from agent.data_analyst_agent import (
     AgentConfigError,
     AgentRuntimeError,
+    SQLToolCallRecord,
     _run_sql_query_impl,
     ask_data_agent,
     build_data_analyst_agent,
+    run_data_agent,
 )
 from database.seed_db import seed_database
 from tools.schema_tool import SchemaToolError
@@ -98,13 +100,20 @@ def test_run_sql_query_tool_delegates_to_execute_read_only_query(seeded_db_path)
     )
     via_tool = _run_sql_query_impl("SELECT COUNT(*) FROM customers", seeded_db_path)
 
+    # execution_time_ms is measured independently by each call, so it is
+    # compared separately rather than as part of a full dict equality.
+    assert via_tool["execution_time_ms"] >= 0
+    direct.pop("execution_time_ms")
+    via_tool.pop("execution_time_ms")
     assert via_tool == direct
 
 
 def test_run_sql_query_tool_result_is_model_friendly_dict(seeded_db_path):
     result = _run_sql_query_impl("SELECT id, city FROM customers LIMIT 3", seeded_db_path)
 
-    assert set(result.keys()) == {"columns", "rows", "row_count", "truncated"}
+    assert set(result.keys()) == {
+        "columns", "rows", "row_count", "truncated", "execution_time_ms",
+    }
     assert result["columns"] == ["id", "city"]
     assert result["row_count"] == 3
     assert isinstance(result["rows"], list)
@@ -285,3 +294,146 @@ def test_ask_data_agent_wraps_runner_errors_without_leaking_raw_exception_type(
 
     with pytest.raises(AgentRuntimeError):
         ask_data_agent("What is total revenue?", database_path=seeded_db_path)
+
+
+# ---------------------------------------------------------------------------
+# SQL tool-call observability: successful and failed call metadata
+# ---------------------------------------------------------------------------
+
+
+def test_successful_sql_call_is_recorded_with_expected_metadata(seeded_db_path):
+    tool_calls: list[SQLToolCallRecord] = []
+
+    result = _run_sql_query_impl(
+        "SELECT id, city FROM customers LIMIT 3", seeded_db_path, tool_calls
+    )
+
+    assert len(tool_calls) == 1
+    record = tool_calls[0]
+    assert record.query == "SELECT id, city FROM customers LIMIT 3"
+    assert record.success is True
+    assert record.row_count == result["row_count"] == 3
+    assert record.truncated is False
+    assert record.error is None
+    assert isinstance(record.execution_time_ms, float)
+    assert record.execution_time_ms >= 0
+
+
+def test_failed_sql_call_is_recorded_with_error_and_no_row_count(seeded_db_path):
+    tool_calls: list[SQLToolCallRecord] = []
+
+    _run_sql_query_impl("DELETE FROM customers", seeded_db_path, tool_calls)
+
+    assert len(tool_calls) == 1
+    record = tool_calls[0]
+    assert record.query == "DELETE FROM customers"
+    assert record.success is False
+    assert record.row_count is None
+    assert record.truncated is None
+    assert record.error is not None
+    assert "SELECT" in record.error
+    assert isinstance(record.execution_time_ms, float)
+    assert record.execution_time_ms >= 0
+
+
+def test_malformed_sql_call_is_recorded_as_failed(seeded_db_path):
+    tool_calls: list[SQLToolCallRecord] = []
+
+    _run_sql_query_impl("SELECT * FRM customers", seeded_db_path, tool_calls)
+
+    assert len(tool_calls) == 1
+    assert tool_calls[0].success is False
+    assert tool_calls[0].error is not None
+
+
+def test_multiple_calls_are_recorded_in_order(seeded_db_path):
+    tool_calls: list[SQLToolCallRecord] = []
+
+    _run_sql_query_impl("SELECT COUNT(*) FROM customers", seeded_db_path, tool_calls)
+    _run_sql_query_impl("SELECT COUNT(*) FROM products", seeded_db_path, tool_calls)
+
+    assert len(tool_calls) == 2
+    assert tool_calls[0].query == "SELECT COUNT(*) FROM customers"
+    assert tool_calls[1].query == "SELECT COUNT(*) FROM products"
+
+
+def test_tool_calls_none_by_default_means_no_recording(seeded_db_path):
+    # Existing 2-argument calls (no tool_calls list) must keep working
+    # exactly as before this iteration: no recording, no error.
+    result = _run_sql_query_impl("SELECT COUNT(*) FROM customers", seeded_db_path)
+    assert "error" not in result
+
+
+def test_execute_read_only_query_includes_execution_time(seeded_db_path):
+    result = execute_read_only_query(
+        "SELECT COUNT(*) FROM customers", database_path=seeded_db_path
+    )
+    assert "execution_time_ms" in result
+    assert isinstance(result["execution_time_ms"], float)
+    assert result["execution_time_ms"] >= 0
+
+
+# ---------------------------------------------------------------------------
+# run_data_agent(): AgentAnswer with tool_calls, ask_data_agent() delegates
+# ---------------------------------------------------------------------------
+
+
+def test_run_data_agent_returns_answer_and_empty_tool_calls_when_tool_not_used(
+    monkeypatch, seeded_db_path
+):
+    class FakeResult:
+        final_output = "There are no orders to report on."
+
+    monkeypatch.setattr(
+        data_analyst_agent.Runner, "run_sync", lambda *a, **k: FakeResult()
+    )
+
+    result = run_data_agent("A question needing no data", database_path=seeded_db_path)
+
+    assert result.answer == "There are no orders to report on."
+    assert result.tool_calls == []
+
+
+def test_run_data_agent_collects_tool_calls_made_during_the_run(monkeypatch, seeded_db_path):
+    """Simulates the agent calling run_sql_query once during Runner.run_sync."""
+    captured = {}
+    real_build = data_analyst_agent.build_data_analyst_agent
+
+    def spy_build(database_path=None, *, tool_calls=None):
+        captured["tool_calls"] = tool_calls
+        return real_build(database_path, tool_calls=tool_calls)
+
+    monkeypatch.setattr(data_analyst_agent, "build_data_analyst_agent", spy_build)
+
+    def fake_run_sync(starting_agent, input, **kwargs):
+        _run_sql_query_impl(
+            "SELECT COUNT(*) FROM customers", seeded_db_path, captured["tool_calls"]
+        )
+
+        class FakeResult:
+            final_output = "There are 100 customers."
+
+        return FakeResult()
+
+    monkeypatch.setattr(data_analyst_agent.Runner, "run_sync", fake_run_sync)
+
+    result = run_data_agent("How many customers are there?", database_path=seeded_db_path)
+
+    assert result.answer == "There are 100 customers."
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].query == "SELECT COUNT(*) FROM customers"
+    assert result.tool_calls[0].success is True
+
+
+def test_ask_data_agent_delegates_to_run_data_agent(monkeypatch, seeded_db_path):
+    class FakeResult:
+        final_output = "Answer text only."
+
+    monkeypatch.setattr(
+        data_analyst_agent.Runner, "run_sync", lambda *a, **k: FakeResult()
+    )
+
+    answer = ask_data_agent("Any question", database_path=seeded_db_path)
+
+    assert answer == "Answer text only."
+    assert isinstance(answer, str)
