@@ -23,9 +23,11 @@ orders, order_items) is implemented and initializable via
 `database/init_db.py`, and it can be populated with a realistic,
 deterministic sample dataset via `database/seed_db.py`. A safe, read-only
 SQL execution layer (`tools/sql_tool.py`) can now validate and run
-analytical SQL against that database. No AI agent logic, OpenAI
-integration, or user interface has been implemented yet. Development
-proceeds incrementally, one feature per iteration.
+analytical SQL against that database, and `tools/schema_tool.py` can
+introspect the database's actual schema into a structured, LLM-friendly
+description. No AI agent logic, OpenAI integration, or user interface
+has been implemented yet. Development proceeds incrementally, one
+feature per iteration.
 
 ## Project Structure
 
@@ -38,7 +40,8 @@ ai-sql-data-agent/
 │   ├── init_db.py          # Creates the SQLite database from schema.sql
 │   └── seed_db.py          # Populates the database with deterministic sample data
 ├── tools/                  # Agent tools
-│   └── sql_tool.py         # Safe, read-only SQL validation and execution
+│   ├── sql_tool.py         # Safe, read-only SQL validation and execution
+│   └── schema_tool.py      # Database schema introspection for prompts
 ├── tests/                   # pytest test suite
 ├── data/                    # Local database files (not committed)
 ├── .env.example             # Template for required environment variables
@@ -184,6 +187,35 @@ result = execute_read_only_query(
 
 This layer does not yet decide *what* SQL to run — that's for the AI
 agent in a later iteration.
+
+### Schema introspection
+
+`tools/schema_tool.py` reads the database's actual structure with
+SQLite's own introspection PRAGMAs (`table_info`, `foreign_key_list`,
+`index_list`) rather than duplicating the schema by hand in Python, so
+the description a future AI agent sees always matches the real database.
+
+```python
+from tools.schema_tool import get_database_schema, format_schema_for_llm
+
+schema = get_database_schema()          # {"tables": [...]} structured metadata
+print(format_schema_for_llm(schema))     # concise text for a prompt
+```
+
+```
+TABLE orders
+- id INTEGER PRIMARY KEY
+- customer_id INTEGER NOT NULL
+- order_date TEXT NOT NULL
+- status TEXT NOT NULL
+FOREIGN KEY: customer_id -> customers.id
+```
+
+It uses its own dedicated read-only connection (`mode=ro` +
+`PRAGMA query_only = ON`) rather than `sql_tool.py`'s connection, because
+that one's authorizer denies PRAGMA statements outright — this module
+only ever runs a small, fixed set of hardcoded introspection PRAGMAs, so
+`sql_tool.py`'s stricter, agent-facing security model is left untouched.
 
 Run the test suite:
 
