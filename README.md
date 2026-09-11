@@ -11,9 +11,13 @@ turns the result into a clear business answer. An automated test suite
 
 ## Demo
 
+**[Open the live Streamlit demo](https://ai-sql-data-agent-yr4isemzzdu7vfbcp49xjq.streamlit.app/)**
+— hosted on Streamlit Community Cloud, no setup required.
+
 Two front ends are available, both calling the same backend agent:
 
-- **Streamlit UI** (interface in Spanish) — `streamlit run streamlit_app.py`
+- **Streamlit UI** (interface in Spanish) — the live demo above, or run
+  it locally with `streamlit run streamlit_app.py`
 - **CLI** (English) — `python app.py`, with an optional `--debug` flag
   that prints the SQL the agent ran for each answer
 
@@ -23,8 +27,7 @@ labels are in Spanish, but a question can be typed in either language on
 either front end, and the agent replies in the same language the
 question was asked in.
 
-No live deployment exists yet; run the app locally with the
-[Getting Started](#getting-started) instructions below.
+To run it yourself instead, see [Getting Started](#getting-started) below.
 
 ## Screenshots
 
@@ -399,33 +402,36 @@ checks and the most recent result.
 
 ## Deployment
 
-The app is ready to deploy to [Streamlit Community
-Cloud](https://streamlit.io/cloud). It has not been deployed yet, so no
-live URL exists.
+The app is deployed and publicly available on [Streamlit Community
+Cloud](https://streamlit.io/cloud).
 
 | Setting | Value |
 |---|---|
+| Platform | Streamlit Community Cloud |
+| Live demo | https://ai-sql-data-agent-yr4isemzzdu7vfbcp49xjq.streamlit.app/ |
 | Repository | `fernandezulises66-svg/ai-sql-data-agent` |
 | Branch | `main` |
-| Main file path (entrypoint) | `streamlit_app.py` |
+| Entrypoint | `streamlit_app.py` |
 | Python version (Advanced settings) | 3.13, to match the development environment |
 
 **Database.** `data/ecommerce.db` is intentionally not committed (see
-`.gitignore`) — a fresh deployment clones the repository without it.
-Before rendering anything else, `streamlit_app.py` calls
+`.gitignore`) — the deployment clones the repository without it. Before
+rendering anything else, `streamlit_app.py` calls
 `database.bootstrap.ensure_sample_database()`, which creates the schema
-and populates the same deterministic sample dataset
-(`database/seed_db.py`, fixed random seed) a local developer would
-otherwise generate by running `python -m database.init_db` and
-`python -m database.seed_db` themselves. This is safe on every app
-restart: both steps are idempotent, so no data is duplicated and an
-already-seeded database is left untouched.
+and automatically bootstraps the same **deterministic, fictional**
+sample dataset (`database/seed_db.py`, fixed random seed) a local
+developer would otherwise generate by running `python -m database.init_db`
+and `python -m database.seed_db` themselves. This runs safely on every
+app startup/restart: both steps are idempotent (and safe under
+concurrent workers — see `seed_database()`'s docstring), so no data is
+duplicated and an already-seeded database is left untouched.
 
 **Secrets.** This app reads configuration from environment variables —
-no code reads `st.secrets` directly. Streamlit Community Cloud exposes
-root-level entries from its Secrets settings as environment variables
-automatically, so no extra secret-handling code is needed. In the
-deployed app's Secrets settings, add:
+no code reads `st.secrets` directly. Secrets for the live deployment are
+configured through Streamlit Community Cloud's own Secrets settings
+(Settings → Secrets in the app dashboard), which exposes root-level
+entries as environment variables automatically, so no extra
+secret-handling code is needed. Its Secrets settings contain:
 
 ```toml
 OPENAI_API_KEY = "..."
@@ -433,9 +439,11 @@ OPENAI_MODEL = "gpt-4o-mini"
 DATABASE_PATH = "data/ecommerce.db"
 ```
 
-Never commit a real API key. `.streamlit/secrets.toml` is listed in
-`.gitignore`, so a local copy used to test secrets won't be committed by
-accident either.
+The OpenAI API key is never committed to the repository — it exists
+only in Streamlit Community Cloud's Secrets settings (and, for local
+runs, an untracked `.env` file). `.streamlit/secrets.toml` is also
+listed in `.gitignore`, so a local copy used to test secrets won't be
+committed by accident either.
 
 ## Limitations / Future Improvements
 
@@ -445,12 +453,10 @@ Current limitations:
 - Single-agent architecture (no multi-agent orchestration)
 - No conversational memory — each question is an independent agent run
 - No authentication
-- Deployment-ready, but not yet deployed (see [Deployment](#deployment))
 
 Possible future extensions:
 
 - A production database such as PostgreSQL
 - Richer evaluation metrics and a larger case set
 - Charts/visualizations in the Streamlit UI
-- A hosted deployment
 - More complex agent orchestration, if a real requirement justifies it
