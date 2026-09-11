@@ -22,19 +22,22 @@ business-oriented answers.
 orders, order_items) is implemented and initializable via
 `database/init_db.py`, and it can be populated with a realistic,
 deterministic sample dataset via `database/seed_db.py`. A safe, read-only
-SQL execution layer (`tools/sql_tool.py`) can now validate and run
-analytical SQL against that database, and `tools/schema_tool.py` can
-introspect the database's actual schema into a structured, LLM-friendly
-description. No AI agent logic, OpenAI integration, or user interface
-has been implemented yet. Development proceeds incrementally, one
-feature per iteration.
+SQL execution layer (`tools/sql_tool.py`) validates and runs analytical
+SQL against that database, and `tools/schema_tool.py` introspects the
+database's actual schema into a structured, LLM-friendly description.
+An AI Data Analyst Agent (`agent/data_analyst_agent.py`), built on the
+OpenAI Agents SDK, now answers natural-language business questions by
+combining those two tools — it can be tried from the terminal via
+`python app.py`. No user interface (Streamlit) has been implemented yet.
+Development proceeds incrementally, one feature per iteration.
 
 ## Project Structure
 
 ```
 ai-sql-data-agent/
-├── app.py                 # Entry point (placeholder)
-├── agent/                 # AI agent logic (not yet implemented)
+├── app.py                 # Terminal entry point for the AI agent
+├── agent/
+│   └── data_analyst_agent.py  # Builds and runs the AI Data Analyst Agent
 ├── database/               # Database setup and access
 │   ├── schema.sql          # SQLite schema: customers, products, orders, order_items
 │   ├── init_db.py          # Creates the SQLite database from schema.sql
@@ -57,7 +60,10 @@ pip install -r requirements.txt
 copy .env.example .env
 ```
 
-Fill in `.env` with real values locally. Never commit `.env`.
+Fill in `.env` with real values locally. Never commit `.env`. Only
+`OPENAI_API_KEY` is required to run the AI agent (`python app.py`);
+`OPENAI_MODEL` and `DATABASE_PATH` are optional and fall back to sensible
+defaults if left blank.
 
 ## Database
 
@@ -217,8 +223,79 @@ that one's authorizer denies PRAGMA statements outright — this module
 only ever runs a small, fixed set of hardcoded introspection PRAGMAs, so
 `sql_tool.py`'s stricter, agent-facing security model is left untouched.
 
+## AI Data Analyst Agent
+
+🟢 Implemented. `agent/data_analyst_agent.py` uses the [OpenAI Agents
+SDK](https://github.com/openai/openai-agents-python) to answer business
+questions in natural language — for example *"What are the top 5
+products by completed-order revenue?"* — by reasoning over the real
+database:
+
+1. The agent's instructions are built dynamically from
+   `get_database_schema()` / `format_schema_for_llm()`
+   (`tools/schema_tool.py`), so it always knows the actual current
+   tables, columns, and foreign keys — nothing about the schema is
+   hardcoded into the prompt.
+2. The agent's only tool, `run_sql_query`, is a thin wrapper around
+   `execute_read_only_query()` (`tools/sql_tool.py`). The agent **never**
+   opens a SQLite connection itself and cannot modify the database —
+   every query it runs passes through the same validation, read-only
+   connection, and SQLite authorizer described above.
+3. The agent inspects the tool's results and answers in plain business
+   language, preferring `completed` orders for revenue/sales figures
+   (unless another status is requested) and computing revenue as
+   `order_items.quantity * order_items.unit_price`.
+
+**Required environment variables** (see `.env.example`):
+
+| Variable | Required | Notes |
+|---|---|---|
+| `OPENAI_API_KEY` | Yes | From https://platform.openai.com/api-keys |
+| `OPENAI_MODEL` | No | Defaults to a small, capable model if left blank |
+| `DATABASE_PATH` | No | Defaults to `data/ecommerce.db` |
+
+**Run it** from the terminal:
+
+```bash
+python app.py
+```
+
+```
+AI SQL Data Analyst Agent
+Ask a business question about the ecommerce database.
+Type 'exit' or 'quit' to leave.
+
+Ask a question:
+> Which product generated the most revenue?
+
+[agent response]
+```
+
+Example questions to try:
+
+- "What are the top 5 products by completed-order revenue?"
+- "Which category generated the most revenue?"
+- "Who are the top 5 customers by spending?"
+- "What was the best sales month?"
+
+The agent discovers every answer through SQL at run time — no answers or
+seeded-data results are hardcoded into its instructions.
+
 Run the test suite:
 
 ```bash
 pytest
+```
+
+The agent's tests (`tests/test_data_analyst_agent.py`) never call the
+real OpenAI API — `Runner.run_sync` is monkeypatched, so `pytest` never
+consumes API credits. To try one real question against the live OpenAI
+API (optional, consumes API credits):
+
+```bash
+copy .env.example .env
+# edit .env and set OPENAI_API_KEY
+python -m database.init_db
+python -m database.seed_db
+python app.py
 ```
