@@ -24,8 +24,21 @@ either front end, and the agent replies in the same language the
 question was asked in.
 
 No live deployment exists yet; run the app locally with the
-[Getting Started](#getting-started) instructions below. Screenshots will
-be added to `docs/screenshots/` in a future update.
+[Getting Started](#getting-started) instructions below.
+
+## Screenshots
+
+![Streamlit demo](docs/screenshots/streamlit-demo.png)
+
+A natural-language business question, asked in Spanish through the
+Streamlit UI, answered using data pulled live from the ecommerce
+database.
+
+![SQL observability panel](docs/screenshots/sql-observability.png)
+
+The expanded "Ver detalles SQL" panel from the same answer, showing the
+SQL tool call the agent made, the number of rows it returned, and its
+execution time.
 
 ## Key Features
 
@@ -267,7 +280,7 @@ ai-sql-data-agent/
 ├── tests/                    # pytest suite (mocked, no real API calls)
 ├── data/                     # Local SQLite database file (not committed)
 ├── docs/
-│   └── screenshots/          # UI screenshots (added separately)
+│   └── screenshots/          # UI screenshots referenced in this README
 ├── .env.example
 └── requirements.txt
 ```
