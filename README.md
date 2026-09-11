@@ -21,9 +21,11 @@ business-oriented answers.
 🚧 In development. The relational database schema (customers, products,
 orders, order_items) is implemented and initializable via
 `database/init_db.py`, and it can be populated with a realistic,
-deterministic sample dataset via `database/seed_db.py`. No AI agent
-logic, OpenAI integration, or user interface has been implemented yet.
-Development proceeds incrementally, one feature per iteration.
+deterministic sample dataset via `database/seed_db.py`. A safe, read-only
+SQL execution layer (`tools/sql_tool.py`) can now validate and run
+analytical SQL against that database. No AI agent logic, OpenAI
+integration, or user interface has been implemented yet. Development
+proceeds incrementally, one feature per iteration.
 
 ## Project Structure
 
@@ -35,7 +37,8 @@ ai-sql-data-agent/
 │   ├── schema.sql          # SQLite schema: customers, products, orders, order_items
 │   ├── init_db.py          # Creates the SQLite database from schema.sql
 │   └── seed_db.py          # Populates the database with deterministic sample data
-├── tools/                  # Agent tools, e.g. SQL validation (not yet implemented)
+├── tools/                  # Agent tools
+│   └── sql_tool.py         # Safe, read-only SQL validation and execution
 ├── tests/                   # pytest test suite
 ├── data/                    # Local database files (not committed)
 ├── .env.example             # Template for required environment variables
@@ -148,6 +151,39 @@ SELECT AVG(order_total) FROM (
     GROUP BY o.id
 );
 ```
+
+### Safe, read-only SQL execution
+
+`tools/sql_tool.py` is the only supported way to run SQL against the
+database. It is built so that this database can never be modified through
+it, even by a mistake in generated SQL, using three independent layers:
+
+1. **Text validation** (`validate_read_only_sql`) — only a single SELECT
+   statement (optionally starting with a `WITH`/CTE clause) is allowed;
+   empty input, multiple statements, and statements such as `INSERT`,
+   `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `REPLACE`, `TRUNCATE`,
+   `VACUUM`, `ATTACH`, `DETACH`, `PRAGMA`, `REINDEX`, `BEGIN`, `COMMIT`,
+   and `ROLLBACK` are rejected with a clear error.
+2. **Read-only connection** — the database is opened with a
+   `file:...?mode=ro` URI plus `PRAGMA query_only = ON`, so SQLite itself
+   refuses writes regardless of the SQL text.
+3. **SQLite authorizer** — `sqlite3.Connection.set_authorizer` allow-lists
+   only the actions a plain SELECT needs and denies everything else
+   (writes, schema changes, `ATTACH`, `PRAGMA`, transaction control),
+   independent of what the text validator decided.
+
+```python
+from tools.sql_tool import execute_read_only_query
+
+result = execute_read_only_query(
+    "SELECT status, COUNT(*) FROM orders GROUP BY status",
+    max_rows=100,
+)
+# {"columns": [...], "rows": [...], "row_count": 4, "truncated": False}
+```
+
+This layer does not yet decide *what* SQL to run — that's for the AI
+agent in a later iteration.
 
 Run the test suite:
 
