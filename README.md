@@ -1,121 +1,94 @@
 # AI SQL Data Analyst Agent
 
-## Problem
+**AI SQL Data Analyst Agent** lets non-technical stakeholders ask business
+questions in plain language — English or Spanish — and get answers
+grounded in real data, without writing SQL themselves. The agent
+dynamically reads a SQLite ecommerce database's schema, generates the
+appropriate SQL, executes it through a validated, read-only tool, and
+turns the result into a clear business answer. An automated test suite
+(233 tests) and an end-to-end evaluation framework (scoring **10/10,
+100%** on its most recent run) back up the implementation.
 
-Business users often need answers from data (sales, customers, orders)
-but don't know SQL. This project aims to build an AI agent that accepts
-natural language business questions, translates them into safe, read-only
-SQL queries, executes them against a database, and returns clear,
-business-oriented answers.
+## Demo
 
-## Planned Tech Stack
+Two front ends are available, both calling the same backend agent:
 
-- Python 3.11+
-- SQLite
-- OpenAI API / tool calling
-- Streamlit
-- pytest
+- **Streamlit UI** (interface in Spanish) — `streamlit run streamlit_app.py`
+- **CLI** (English) — `python app.py`, with an optional `--debug` flag
+  that prints the SQL the agent ran for each answer
 
-## Current Status
+The agent itself understands and answers in **both English and
+Spanish**, regardless of which front end you use — the Streamlit UI's
+labels are in Spanish, but a question can be typed in either language on
+either front end, and the agent replies in the same language the
+question was asked in.
 
-🚧 In development. The relational database schema (customers, products,
-orders, order_items) is implemented and initializable via
-`database/init_db.py`, and it can be populated with a realistic,
-deterministic sample dataset via `database/seed_db.py`. A safe, read-only
-SQL execution layer (`tools/sql_tool.py`) validates and runs analytical
-SQL against that database, and `tools/schema_tool.py` introspects the
-database's actual schema into a structured, LLM-friendly description.
-An AI Data Analyst Agent (`agent/data_analyst_agent.py`), built on the
-OpenAI Agents SDK, now answers natural-language business questions in
-English or Spanish by combining those two tools — it can be tried from
-the terminal via `python app.py` (add `--debug` to see the SQL it ran),
-or from a Streamlit web UI via `streamlit run streamlit_app.py`. A
-lightweight end-to-end evaluation suite (`evals/`, run via
-`python -m evals.run_evals`) checks the agent's real behavior against
-representative questions. Development proceeds incrementally, one
-feature per iteration.
+No live deployment exists yet; run the app locally with the
+[Getting Started](#getting-started) instructions below. Screenshots will
+be added to `docs/screenshots/` in a future update.
 
-## Project Structure
+## Key Features
 
-```
-ai-sql-data-agent/
-├── app.py                 # Terminal (CLI) entry point for the AI agent
-├── streamlit_app.py        # Streamlit web UI for the AI agent
-├── agent/
-│   └── data_analyst_agent.py  # Builds and runs the AI Data Analyst Agent
-├── database/               # Database setup and access
-│   ├── schema.sql          # SQLite schema: customers, products, orders, order_items
-│   ├── init_db.py          # Creates the SQLite database from schema.sql
-│   └── seed_db.py          # Populates the database with deterministic sample data
-├── tools/                  # Agent tools
-│   ├── sql_tool.py         # Safe, read-only SQL validation and execution
-│   └── schema_tool.py      # Database schema introspection for prompts
-├── evals/                  # End-to-end agent evaluation suite (real API calls)
-│   ├── eval_cases.py        # Representative business questions + metadata
-│   ├── ground_truth.py      # Trusted SQL computing objective expected answers
-│   ├── checks.py            # Small, transparent pass/fail checks
-│   ├── runner.py            # Runs cases against the agent and grades them
-│   └── run_evals.py         # CLI: python -m evals.run_evals
-├── tests/                   # pytest test suite (mocked, no real API calls)
-├── data/                    # Local database files (not committed)
-├── .env.example             # Template for required environment variables
-└── requirements.txt
+- Natural-language data analysis over a real relational database
+- OpenAI Agents SDK tool calling — the agent decides when and how to query data
+- Dynamic schema introspection (table/column knowledge is never hardcoded into prompts)
+- Safe, read-only SQL execution (a single `SELECT`, optionally with `WITH`, per call)
+- Defense-in-depth SQL security (text validation + read-only connection + SQLite authorizer)
+- Multilingual responses (English and Spanish, matched to the question's language)
+- SQL tool-call observability (query text, rows returned, truncation, timing, errors)
+- Automated test suite (233 tests, no real API calls)
+- End-to-end agent evaluation framework, scored against trusted SQL ground truth
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A[User] --> B[Streamlit UI or CLI]
+    B --> C[AI Data Analyst Agent]
+    C --> D[Dynamic Schema Context]
+    D --> E[SQL Tool]
+    E --> F[SQL Validation]
+    F --> G[Read-only Connection and Authorizer]
+    G --> H[(Ecommerce Database)]
+    H --> I[SQL Result]
+    I --> C
+    C --> J[Business Answer]
+    J --> A
 ```
 
-## Setup
+The agent (`agent/data_analyst_agent.py`, built on the OpenAI Agents SDK)
+never opens a database connection itself and never receives raw
+database access. At construction time it's given the database's current
+schema as context (`tools/schema_tool.py`); at question time, its only
+way to read data is a single tool, `run_sql_query`, which is a thin
+wrapper around `tools/sql_tool.py`'s `execute_read_only_query()`. Every
+query the model writes passes through SQL validation and a read-only
+connection before it ever touches SQLite — the model has no path to the
+database that bypasses those layers. The tool's result (rows, not raw
+model reasoning) goes back to the agent, which turns it into a business
+answer.
+
+### Database
+
+The domain is a fictional ecommerce business: `customers`, `products`,
+`orders`, and `order_items` (schema in `database/schema.sql`), with
+foreign keys from `orders.customer_id` to `customers` and from
+`order_items` to both `orders` and `products`.
+
+`database/seed_db.py` generates a deterministic sample dataset (~100
+customers, 30 products, 500–800 orders and their line items, spread
+across a fixed 12-month period) from a fixed random seed, so the same
+command always produces the same data — this is what makes the
+evaluation framework's ground truth reproducible. Seeding is idempotent:
+if `customers` already has rows, it's a no-op.
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-copy .env.example .env
+python -m database.init_db   # creates the schema
+python -m database.seed_db   # populates it with sample data
 ```
 
-Fill in `.env` with real values locally. Never commit `.env`. Only
-`OPENAI_API_KEY` is required to run the AI agent (`python app.py`);
-`OPENAI_MODEL` and `DATABASE_PATH` are optional and fall back to sensible
-defaults if left blank.
-
-## Database
-
-Initialize the SQLite database (creates it at `DATABASE_PATH`, or
-`data/ecommerce.db` by default, if it doesn't already exist):
-
-```bash
-python -m database.init_db
-```
-
-Inspect it with the `sqlite3` CLI:
-
-```bash
-sqlite3 data/ecommerce.db ".tables"
-sqlite3 data/ecommerce.db ".schema"
-```
-
-### Sample data
-
-Populate the database with a realistic, deterministic sample dataset
-(~100 customers, 30 products, 500-800 orders, and their order items,
-spread across a fixed 12-month period):
-
-```bash
-python -m database.seed_db
-```
-
-The dataset uses a fixed random seed and a fixed calendar year, so every
-run generates identical data. Seeding is idempotent: if the `customers`
-table already has rows, `seed_db.py` skips seeding instead of inserting
-duplicates. To regenerate the dataset from scratch, delete the database
-file and re-run both commands above.
-
-The data is intentionally non-uniform so it supports meaningful
-analysis: some products sell far better than others, a subset of
-customers place many more orders than average, revenue varies by
-category and by month, and a portion of orders are `cancelled` (most are
-`completed`).
-
-Example verification queries (also encoded as assertions in
-`tests/test_seed_db.py`):
+Example analytical queries this dataset supports (also encoded as
+assertions in `tests/test_seed_db.py`):
 
 ```sql
 -- Total revenue from completed orders
@@ -134,25 +107,6 @@ GROUP BY p.id
 ORDER BY revenue DESC
 LIMIT 5;
 
--- Revenue by category
-SELECT p.category, SUM(oi.quantity * oi.unit_price) AS revenue
-FROM order_items oi
-JOIN orders o ON o.id = oi.order_id
-JOIN products p ON p.id = oi.product_id
-WHERE o.status = 'completed'
-GROUP BY p.category
-ORDER BY revenue DESC;
-
--- Top customers by spending
-SELECT c.first_name, c.last_name, SUM(oi.quantity * oi.unit_price) AS spending
-FROM order_items oi
-JOIN orders o ON o.id = oi.order_id
-JOIN customers c ON c.id = o.customer_id
-WHERE o.status = 'completed'
-GROUP BY c.id
-ORDER BY spending DESC
-LIMIT 10;
-
 -- Monthly sales trend
 SELECT strftime('%Y-%m', o.order_date) AS month,
        SUM(oi.quantity * oi.unit_price) AS revenue
@@ -161,271 +115,79 @@ JOIN orders o ON o.id = oi.order_id
 WHERE o.status = 'completed'
 GROUP BY month
 ORDER BY month;
-
--- Average completed order value
-SELECT AVG(order_total) FROM (
-    SELECT o.id, SUM(oi.quantity * oi.unit_price) AS order_total
-    FROM orders o
-    JOIN order_items oi ON oi.order_id = o.id
-    WHERE o.status = 'completed'
-    GROUP BY o.id
-);
 ```
 
-### Safe, read-only SQL execution
+### SQL tool observability
 
-`tools/sql_tool.py` is the only supported way to run SQL against the
-database. It is built so that this database can never be modified through
-it, even by a mistake in generated SQL, using three independent layers:
+Every `run_sql_query` call is recorded as a `SQLToolCallRecord`: the
+query text, whether it succeeded, `row_count`, `truncated`,
+`execution_time_ms`, and the error message if it failed. It never
+records API keys, secrets, or full prompts. The CLI's `python app.py
+--debug` and the Streamlit UI's "Ver detalles SQL" ("View SQL details")
+expander both surface this same data so a technical reviewer can see
+exactly what SQL produced an answer — never the model's internal
+reasoning, which the SDK does not expose to this application in the
+first place.
 
-1. **Text validation** (`validate_read_only_sql`) — only a single SELECT
-   statement (optionally starting with a `WITH`/CTE clause) is allowed;
-   empty input, multiple statements, and statements such as `INSERT`,
-   `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `REPLACE`, `TRUNCATE`,
-   `VACUUM`, `ATTACH`, `DETACH`, `PRAGMA`, `REINDEX`, `BEGIN`, `COMMIT`,
-   and `ROLLBACK` are rejected with a clear error.
-2. **Read-only connection** — the database is opened with a
-   `file:...?mode=ro` URI plus `PRAGMA query_only = ON`, so SQLite itself
-   refuses writes regardless of the SQL text.
+## Security
+
+The database can't be modified through this agent, even by a mistake in
+generated SQL, because of three independent layers:
+
+1. **SQL validation** (`tools/sql_tool.py::validate_read_only_sql`) — an
+   allow-list, not just a blocklist: only a single `SELECT` statement,
+   optionally starting with `WITH`, is accepted. Empty input, multiple
+   statements, and statements such as `INSERT`, `UPDATE`, `DELETE`,
+   `DROP`, `ALTER`, `CREATE`, `ATTACH`, `PRAGMA`, and transaction control
+   (`BEGIN`/`COMMIT`/`ROLLBACK`) are rejected before anything touches
+   the database.
+2. **Read-only SQLite connection** — opened via a `file:...?mode=ro` URI
+   plus `PRAGMA query_only = ON`, so SQLite itself refuses writes
+   regardless of what SQL text arrives.
 3. **SQLite authorizer** — `sqlite3.Connection.set_authorizer` allow-lists
-   only the actions a plain SELECT needs and denies everything else
-   (writes, schema changes, `ATTACH`, `PRAGMA`, transaction control),
-   independent of what the text validator decided.
+   only the actions a plain `SELECT` needs (read, select, function,
+   recursive) and denies everything else — including `ATTACH`, which
+   could otherwise be used to write to a different file — independent of
+   what the text validator decided.
 
-```python
-from tools.sql_tool import execute_read_only_query
+Additional practices:
 
-result = execute_read_only_query(
-    "SELECT status, COUNT(*) FROM orders GROUP BY status",
-    max_rows=100,
-)
-# {"columns": [...], "rows": [...], "row_count": 4, "truncated": False}
-```
-
-This layer does not yet decide *what* SQL to run — that's for the AI
-agent in a later iteration.
-
-### Schema introspection
-
-`tools/schema_tool.py` reads the database's actual structure with
-SQLite's own introspection PRAGMAs (`table_info`, `foreign_key_list`,
-`index_list`) rather than duplicating the schema by hand in Python, so
-the description a future AI agent sees always matches the real database.
-
-```python
-from tools.schema_tool import get_database_schema, format_schema_for_llm
-
-schema = get_database_schema()          # {"tables": [...]} structured metadata
-print(format_schema_for_llm(schema))     # concise text for a prompt
-```
-
-```
-TABLE orders
-- id INTEGER PRIMARY KEY
-- customer_id INTEGER NOT NULL
-- order_date TEXT NOT NULL
-- status TEXT NOT NULL
-FOREIGN KEY: customer_id -> customers.id
-```
-
-It uses its own dedicated read-only connection (`mode=ro` +
-`PRAGMA query_only = ON`) rather than `sql_tool.py`'s connection, because
-that one's authorizer denies PRAGMA statements outright — this module
-only ever runs a small, fixed set of hardcoded introspection PRAGMAs, so
-`sql_tool.py`'s stricter, agent-facing security model is left untouched.
-
-## AI Data Analyst Agent
-
-🟢 Implemented. `agent/data_analyst_agent.py` uses the [OpenAI Agents
-SDK](https://github.com/openai/openai-agents-python) to answer business
-questions in natural language — for example *"What are the top 5
-products by completed-order revenue?"* — by reasoning over the real
-database:
-
-1. The agent's instructions are built dynamically from
-   `get_database_schema()` / `format_schema_for_llm()`
-   (`tools/schema_tool.py`), so it always knows the actual current
-   tables, columns, and foreign keys — nothing about the schema is
-   hardcoded into the prompt.
-2. The agent's only tool, `run_sql_query`, is a thin wrapper around
-   `execute_read_only_query()` (`tools/sql_tool.py`). The agent **never**
-   opens a SQLite connection itself and cannot modify the database —
-   every query it runs passes through the same validation, read-only
-   connection, and SQLite authorizer described above.
-3. The agent inspects the tool's results and answers in plain business
-   language, preferring `completed` orders for revenue/sales figures
-   (unless another status is requested) and computing revenue as
-   `order_items.quantity * order_items.unit_price`.
-
-**Required environment variables** (see `.env.example`):
-
-| Variable | Required | Notes |
-|---|---|---|
-| `OPENAI_API_KEY` | Yes | From https://platform.openai.com/api-keys |
-| `OPENAI_MODEL` | No | Defaults to a small, capable model if left blank |
-| `DATABASE_PATH` | No | Defaults to `data/ecommerce.db` |
-
-**Run it** from the terminal:
-
-```bash
-python app.py
-```
-
-```
-AI SQL Data Analyst Agent
-Ask a business question about the ecommerce database.
-Type 'exit' or 'quit' to leave.
-
-Ask a question:
-> Which product generated the most revenue?
-
-[agent response]
-```
-
-Example questions to try:
-
-- "What are the top 5 products by completed-order revenue?"
-- "Which category generated the most revenue?"
-- "Who are the top 5 customers by spending?"
-- "What was the best sales month?"
-
-The agent discovers every answer through SQL at run time — no answers or
-seeded-data results are hardcoded into its instructions.
-
-### Observability / debug mode
-
-Every call to the `run_sql_query` tool is recorded as a lightweight
-`SQLToolCallRecord` (`agent/data_analyst_agent.py`): the query text,
-whether it succeeded, `row_count`, `truncated`, `execution_time_ms`
-(measured with `time.perf_counter()` in `tools/sql_tool.py`), and the
-error message if it failed. It deliberately never records API keys,
-environment secrets, or the actual returned row data — just call
-metadata, so you can see *how* the agent used the database without
-exposing anything sensitive.
-
-`ask_data_agent(question)` still returns just the answer string, unchanged.
-For the full picture, `run_data_agent(question)` returns an `AgentAnswer`
-with both `.answer` and `.tool_calls`.
-
-Run the CLI with `--debug` to print that tool activity after each answer:
-
-```bash
-python app.py --debug
-```
-
-```
-Ask a question:
-> Which product generated the most revenue?
-
-The Ergonomic Office Chair generated the most revenue.
-
-SQL executed:
-SELECT p.name, SUM(oi.quantity * oi.unit_price) AS revenue
-FROM order_items oi JOIN products p ON p.id = oi.product_id
-GROUP BY p.id ORDER BY revenue DESC LIMIT 1
-
-Rows returned: 1
-Truncated: False
-Execution time: 2.4 ms
-```
-
-Normal mode (no `--debug`) prints only the final business answer, never
-the SQL. Debug output only ever shows *observable tool activity* — the
-query text and its outcome — never the model's internal reasoning or
-chain-of-thought, which the OpenAI Agents SDK does not expose to this
-application in the first place.
-
-## Streamlit Interface
-
-🟢 Implemented. `streamlit_app.py` is a web UI for the same agent — a
-thin presentation layer that calls the existing `run_data_agent()` API
-(`agent/data_analyst_agent.py`) and renders its result; it does not
-reimplement agent construction, SQL execution, or schema introspection.
-The terminal CLI (`app.py`) keeps working unchanged alongside it.
-
-Run it locally:
-
-```bash
-streamlit run streamlit_app.py
-```
-
-The page opens with a title, a short description, and a note that
-responses are generated from real SQL queries, that database access is
-strictly read-only, and that the data is fictional sample data. Type a
-business question — **in English or Spanish** — into the form and click
-**Ask** (or pick one of the built-in example questions, in both
-languages, which fill in the box for you) to get an answer from the
-live agent.
-
-Each answer has an optional **"View SQL details"** expander — the same
-observability data the CLI's `--debug` mode shows (query text, rows
-returned, truncation, execution time, and any error), never the model's
-internal reasoning. If the agent didn't need to query the database (a
-general/conversational question), it says so instead. Previous
-questions in the session are kept in a simple, collapsible history for
-convenience; this is UI-only — each question is still an independent
-agent run, with no conversation memory added to the agent itself.
-
-The sidebar summarizes the tech stack and architecture highlights
-(schema introspection, read-only SQL execution, validation, tool
-calling, multilingual responses, observability, evaluations) for a
-technical reviewer skimming the project.
-
-Missing configuration (`OPENAI_API_KEY`), a missing/invalid database, or
-an agent/API failure are shown as a Streamlit error message — never a
-raw traceback.
+- Query results are capped (`max_rows`, default 100) so a single query
+  can't pull an unbounded result set.
+- Secrets (`OPENAI_API_KEY`) live only in environment variables / a
+  local `.env` file, which is listed in `.gitignore` and never committed
+  — only `.env.example` (with blank values) is.
+- The agent never receives a writable database handle at any point; the
+  read-only connection and validation described above are the *only*
+  way it can reach SQLite.
 
 ## Agent Evaluation
 
-Unit tests (`tests/`) validate deterministic application logic — SQL
-validation, schema introspection, seeding, agent wiring — with mocks and
-never touch the OpenAI API. They can't tell you whether the *agent*
-actually answers a real business question correctly. The `evals/`
-package fills that gap with a small, transparent evaluation suite that
-runs representative questions through the real agent and grades its
-end-to-end behavior. It is intentionally not a unit-test replacement,
-and it is never run automatically by `pytest`.
+Unit tests validate deterministic application logic with mocks and never
+touch the OpenAI API — they can't tell you whether the *agent* answers a
+real business question correctly. `evals/` is a separate, small
+evaluation suite that runs representative questions through the real
+agent and grades its end-to-end behavior. It is intentionally not a
+unit-test replacement, and `pytest` never runs it automatically.
 
-- `evals/eval_cases.py` — 10 representative cases (revenue, categories,
-  customers, monthly trends, aggregations, a status breakdown, a
-  category comparison, a multi-JOIN question, one question the schema
-  cannot answer, and one general/conversational question). Each case is
-  just a question plus metadata — never a hardcoded full answer.
-- `evals/ground_truth.py` — trusted SQL, written by hand for this suite
-  and kept completely separate from the agent's own instructions,
-  computes the objective expected answer (a top product, a revenue
-  figure, ...) directly from the live database. Ground truth is never
-  computed by asking the AI agent.
-- `evals/checks.py` — small, explainable, rule-based checks (no
-  LLM-as-a-judge): did the agent use `run_sql_query` when it should
-  have (and *not* when it shouldn't)? Do the expected entity names
-  appear in the answer? Does a number close enough to the expected
-  value (2% or $0.50, whichever is larger) appear? For the unsupported
-  question, does the answer hedge instead of inventing a number?
-- `evals/runner.py` — runs each case, times it, and grades it against
-  those checks into an `EvalResult` (`case_id`, `passed`, whether/how
-  many times the SQL tool was used, `execution_time_ms`, the final
-  answer, and a plain-English `failure_reason` when it fails).
+- **`evals/eval_cases.py`** — 10 representative cases: revenue by
+  product/category, top customers, best sales month, average order
+  value, an order-status breakdown, a category comparison, a
+  multi-`JOIN` question, one question the schema cannot answer, and one
+  general/conversational question. Each case is a question plus
+  metadata — never a hardcoded answer.
+- **`evals/ground_truth.py`** — trusted SQL, written by hand for this
+  suite and kept separate from the agent's own instructions, computes
+  the objective expected answer directly from the live database. Ground
+  truth is never computed by asking the AI agent.
+- **`evals/checks.py`** — small, explainable, rule-based checks (no
+  LLM-as-a-judge): did the agent use `run_sql_query` when it should have
+  (and *not* when it shouldn't)? Do the expected entity names appear in
+  the answer? Does a number close enough to the expected value appear?
+  For the unsupported question, does the answer hedge instead of
+  inventing a number, rather than confidently fabricating one?
 
-Run it for real:
-
-```bash
-python -m evals.run_evals
-```
-
-**This calls the real OpenAI API once per case and consumes API usage** —
-exactly like `python app.py` does. It needs `OPENAI_API_KEY` set and the
-database initialized and seeded first:
-
-```bash
-copy .env.example .env
-# edit .env and set OPENAI_API_KEY
-python -m database.init_db
-python -m database.seed_db
-python -m evals.run_evals
-```
-
-Example report:
+The most recent real run scored **10/10 (100%)**:
 
 ```
 AI DATA AGENT EVALUATION
@@ -433,36 +195,198 @@ AI DATA AGENT EVALUATION
 PASS  top_products_revenue
 PASS  top_category_revenue
 PASS  top_customers_spending
-FAIL  unsupported_question
-      -> Answer does not clearly acknowledge that this cannot be answered...
-...
+PASS  best_sales_month
+PASS  average_completed_order_value
+PASS  order_count_by_status
+PASS  category_comparison
+PASS  multi_join_question
+PASS  unsupported_question
+PASS  conversational_question
 
-Score: 9/10 (90%)
-Average agent execution time: 1840.3 ms
-Total SQL tool calls: 9
+Score: 10/10 (100%)
 ```
 
-Unit tests for the evaluation framework itself
-(`tests/test_evals.py`) never call the real API: `run_case`/`run_all`
-always take a mocked `agent_runner` in tests, and ground-truth SQL is
-verified against a small hand-built temporary database with exactly
-known expected values.
+The runner also reports the average agent execution time and total SQL
+tool calls across all cases. Running it for real calls the OpenAI API
+once per case and consumes API usage — see
+[Running Agent Evaluations](#running-agent-evaluations).
 
-Run the test suite:
+## Test Coverage
 
-```bash
+**233 pytest tests passing.** They cover:
+
+- Database initialization and deterministic seeding
+- SQL validation and read-only execution (including that rejected/unsafe
+  queries leave the database unchanged)
+- Dynamic schema introspection
+- Agent construction and wiring (schema injection, tool delegation,
+  configuration/error handling)
+- SQL tool-call observability (successful and failed call metadata)
+- The evaluation framework itself (case structure, ground-truth SQL,
+  scoring, checks, report formatting)
+- Streamlit UI helper functions and app smoke tests (`streamlit.testing.v1.AppTest`)
+
+`pytest` uses mocks for every OpenAI API interaction (`Runner.run_sync`
+is always monkeypatched) and never consumes API credits. Only
+`python -m evals.run_evals` and normal use of `app.py` /
+`streamlit_app.py` call the real API. Code coverage has not been
+measured, so no coverage percentage is claimed.
+
+## Tech Stack
+
+| Category | Technology |
+|---|---|
+| Language | Python 3.13 |
+| Database | SQLite / SQL |
+| AI | OpenAI Agents SDK |
+| Web UI | Streamlit |
+| Testing | pytest |
+| Version control | Git / GitHub |
+
+## Project Structure
+
+```
+ai-sql-data-agent/
+├── app.py                    # CLI entry point
+├── streamlit_app.py          # Streamlit UI (Spanish)
+├── agent/
+│   └── data_analyst_agent.py # Agent construction, tool wiring, execution
+├── tools/
+│   ├── sql_tool.py           # Safe, read-only SQL validation and execution
+│   └── schema_tool.py        # Dynamic schema introspection
+├── database/
+│   ├── schema.sql            # Table definitions
+│   ├── init_db.py            # Creates the SQLite database
+│   └── seed_db.py            # Deterministic sample data generator
+├── evals/
+│   ├── eval_cases.py         # Representative evaluation questions
+│   ├── ground_truth.py       # Trusted SQL for objective expected answers
+│   ├── checks.py             # Rule-based pass/fail checks
+│   ├── runner.py             # Runs cases against the agent and grades them
+│   └── run_evals.py          # CLI: python -m evals.run_evals
+├── tests/                    # pytest suite (mocked, no real API calls)
+├── data/                     # Local SQLite database file (not committed)
+├── docs/
+│   └── screenshots/          # UI screenshots (added separately)
+├── .env.example
+└── requirements.txt
+```
+
+## Getting Started
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+Edit `.env` and set `OPENAI_API_KEY` (required to run the agent — get
+one at https://platform.openai.com/api-keys). `OPENAI_MODEL` and
+`DATABASE_PATH` are optional and fall back to sensible defaults if left
+blank. Never commit `.env` — it's already in `.gitignore`.
+
+Then initialize and seed the database:
+
+```powershell
+python -m database.init_db
+python -m database.seed_db
+```
+
+## Running the Application
+
+CLI:
+
+```powershell
+python app.py
+```
+
+CLI with SQL observability:
+
+```powershell
+python app.py --debug
+```
+
+Streamlit (Spanish UI):
+
+```powershell
+streamlit run streamlit_app.py
+```
+
+## Example Questions
+
+The agent discovers every answer through SQL at run time — none of
+these have hardcoded answers.
+
+**English**
+
+- What are the top 5 products by completed-order revenue?
+- Which category generated the most revenue?
+- Who are the top 5 customers by spending?
+- What was the best sales month?
+- What is the average completed order value?
+
+**Español**
+
+- ¿Cuáles fueron los 5 productos con mayor facturación?
+- ¿Qué categoría generó más ingresos?
+- ¿Quiénes fueron los 5 clientes con mayor gasto?
+- ¿Cuál fue el mejor mes de ventas?
+
+## Running Tests
+
+```powershell
 pytest
 ```
 
-The agent's tests (`tests/test_data_analyst_agent.py`) never call the
-real OpenAI API — `Runner.run_sync` is monkeypatched, so `pytest` never
-consumes API credits. To try one real question against the live OpenAI
-API (optional, consumes API credits):
+233 tests, all mocked — no real OpenAI API calls, no API usage consumed.
 
-```bash
-copy .env.example .env
-# edit .env and set OPENAI_API_KEY
-python -m database.init_db
-python -m database.seed_db
-python app.py
+## Running Agent Evaluations
+
+```powershell
+python -m evals.run_evals
 ```
+
+This calls the real OpenAI API once per evaluation case and **consumes
+API usage** — it needs `OPENAI_API_KEY` set and the database initialized
+and seeded first. See [Agent Evaluation](#agent-evaluation) for what it
+checks and the most recent result.
+
+## Design Decisions
+
+- **SQLite** over a client-server database: zero setup for anyone
+  cloning the repo, while still exercising real SQL, joins, and
+  constraints — appropriate for a portfolio demo, not a production
+  deployment.
+- **Schema introspected dynamically, not duplicated in prompts** —
+  `tools/schema_tool.py` reads the live schema via SQLite's own
+  `PRAGMA` introspection, so the agent's instructions can never drift
+  out of sync with the actual database.
+- **The LLM never connects directly to the database** — it only ever
+  calls the `run_sql_query` tool, which enforces validation and a
+  read-only connection independently of the model's behavior.
+- **Deterministic seeded dataset** — a fixed random seed makes the
+  sample data (and therefore the evaluation suite's ground truth)
+  reproducible across machines and runs.
+- **Agent evaluations kept separate from unit tests** — unit tests check
+  deterministic logic with mocks; evaluations check real end-to-end
+  agent behavior against a live model, and are run deliberately rather
+  than on every `pytest` invocation.
+
+## Limitations / Future Improvements
+
+Current limitations:
+
+- SQLite rather than a production-grade database
+- Single-agent architecture (no multi-agent orchestration)
+- No conversational memory — each question is an independent agent run
+- No authentication
+- Not deployed; runs locally only
+
+Possible future extensions:
+
+- A production database such as PostgreSQL
+- Richer evaluation metrics and a larger case set
+- Charts/visualizations in the Streamlit UI
+- A hosted deployment
+- More complex agent orchestration, if a real requirement justifies it
