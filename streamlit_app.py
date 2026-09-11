@@ -17,6 +17,13 @@ independent agent run (see ``run_data_agent``'s docstring); this module
 only remembers past question/answer pairs in ``st.session_state`` for
 convenient on-screen history, it does not add conversation memory to the
 agent itself.
+
+Before rendering anything else, ``main()`` calls
+``database.bootstrap.ensure_sample_database()`` so a fresh deployment
+(e.g. Streamlit Community Cloud, which clones this repo from GitHub
+without the gitignored ``data/ecommerce.db`` file) prepares its own demo
+database automatically on first startup, reusing the same idempotent
+schema/seed logic the local developer workflow already relies on.
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from agent.data_analyst_agent import (
     SQLToolCallRecord,
     run_data_agent,
 )
+from database.bootstrap import ensure_sample_database
 from tools.schema_tool import SchemaToolError
 
 PAGE_TITLE = "Agente de Análisis de Datos con IA y SQL"
@@ -109,6 +117,20 @@ def error_message_for(exc: Exception) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _bootstrap_database() -> str | None:
+    """Ensure the sample database exists before the agent can be used.
+
+    Returns the resolved database path on success. On failure, shows a
+    clean Streamlit error (never a raw traceback) and returns None — the
+    caller must not continue into the rest of the app in that case.
+    """
+    try:
+        return ensure_sample_database()
+    except Exception as exc:
+        st.error(f"No se pudo preparar la base de datos de ejemplo: {exc}")
+        return None
+
+
 def _use_example_question(question: str) -> None:
     st.session_state["question_input"] = question
 
@@ -182,6 +204,12 @@ def render_answer(answer: AgentAnswer) -> None:
 
 def main() -> None:
     st.set_page_config(page_title=PAGE_TITLE, page_icon="📊", layout="centered")
+
+    database_path = _bootstrap_database()
+    if database_path is None:
+        st.title(PAGE_TITLE)
+        return
+
     render_sidebar()
 
     st.title(PAGE_TITLE)
@@ -235,7 +263,7 @@ def main() -> None:
         else:
             with st.spinner("Analizando tu pregunta... el agente está consultando la base de datos."):
                 try:
-                    result = run_data_agent(question)
+                    result = run_data_agent(question, database_path=database_path)
                 except Exception as exc:  # AgentConfigError, SchemaToolError, AgentRuntimeError, ...
                     st.error(error_message_for(exc))
                 else:

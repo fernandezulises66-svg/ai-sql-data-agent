@@ -8,10 +8,16 @@ Streamlit rendering. It covers:
    tested directly, the same way any other module in this project is.
 2. A handful of smoke tests using streamlit.testing.v1.AppTest to prove
    the app boots and the main flows (ask -> answer -> SQL details,
-   errors, empty input, no-SQL-call case) render without exceptions.
+   errors, empty input, no-SQL-call case, database bootstrap) render
+   without exceptions.
 
 agent.data_analyst_agent.run_data_agent is always monkeypatched before
-driving the app, so no test here ever calls the real OpenAI API.
+driving the app, so no test here ever calls the real OpenAI API. Every
+AppTest run in this file uses its own isolated, pre-seeded temporary
+database (see the autouse _isolated_database fixture below) so the real,
+unmocked database bootstrap that main() runs on every load never touches
+the shared project database and stays fast (an idempotent no-op against
+an already-seeded database).
 """
 
 from pathlib import Path
@@ -20,6 +26,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 import agent.data_analyst_agent as data_analyst_agent
+import database.bootstrap as bootstrap_module
 from agent.data_analyst_agent import (
     AgentAnswer,
     AgentConfigError,
@@ -27,6 +34,7 @@ from agent.data_analyst_agent import (
     AgentRuntimeError,
     SQLToolCallRecord,
 )
+from database.seed_db import seed_database
 from streamlit_app import (
     build_observability_view,
     build_tool_call_view,
@@ -36,6 +44,14 @@ from streamlit_app import (
 from tools.schema_tool import SchemaToolError
 
 APP_PATH = str(Path(__file__).resolve().parent.parent / "streamlit_app.py")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_database(monkeypatch, tmp_path):
+    db_path = str(tmp_path / "test_ecommerce.db")
+    seed_database(db_path)
+    monkeypatch.setenv("DATABASE_PATH", db_path)
+    return db_path
 
 
 # ---------------------------------------------------------------------------
@@ -257,3 +273,47 @@ def test_clicking_example_question_fills_the_input(monkeypatch):
 
     assert not at.exception
     assert at.text_input(key="question_input").value == example_question
+
+
+# ---------------------------------------------------------------------------
+# Database bootstrap on startup
+# ---------------------------------------------------------------------------
+
+
+def test_app_bootstraps_a_missing_database_on_first_run(monkeypatch, tmp_path):
+    """main() must prepare the database itself on a fresh deployment,
+    where data/ecommerce.db does not exist yet (it's gitignored)."""
+    fresh_db_path = str(tmp_path / "brand_new" / "ecommerce.db")
+    monkeypatch.setenv("DATABASE_PATH", fresh_db_path)
+    assert not Path(fresh_db_path).exists()
+
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=60)
+
+    assert not at.exception
+    assert Path(fresh_db_path).exists()
+    assert at.title[0].value  # the normal page rendered, not an error-only page
+
+
+def test_bootstrap_failure_shows_clean_error_and_stops_before_the_agent(monkeypatch):
+    def failing_bootstrap(database_path=None):
+        raise RuntimeError("disk full (simulated)")
+
+    monkeypatch.setattr(bootstrap_module, "ensure_sample_database", failing_bootstrap)
+
+    calls = []
+    monkeypatch.setattr(
+        data_analyst_agent, "run_data_agent", lambda *a, **k: calls.append(a)
+    )
+
+    at = AppTest.from_file(APP_PATH)
+    at.run(timeout=30)
+
+    assert not at.exception
+    errors = [e.value for e in at.error]
+    assert any("no se pudo preparar la base de datos" in e.lower() for e in errors)
+    assert not any("Traceback" in e for e in errors)
+    # The rest of the app (question form) must not have rendered, and the
+    # agent must never have been reached.
+    assert len(at.text_input) == 0
+    assert calls == []

@@ -270,7 +270,8 @@ ai-sql-data-agent/
 ├── database/
 │   ├── schema.sql            # Table definitions
 │   ├── init_db.py            # Creates the SQLite database
-│   └── seed_db.py            # Deterministic sample data generator
+│   ├── seed_db.py            # Deterministic sample data generator
+│   └── bootstrap.py          # ensure_sample_database(): deployment startup helper
 ├── evals/
 │   ├── eval_cases.py         # Representative evaluation questions
 │   ├── ground_truth.py       # Trusted SQL for objective expected answers
@@ -299,7 +300,9 @@ one at https://platform.openai.com/api-keys). `OPENAI_MODEL` and
 `DATABASE_PATH` are optional and fall back to sensible defaults if left
 blank. Never commit `.env` — it's already in `.gitignore`.
 
-Then initialize and seed the database:
+Then initialize and seed the database (required for the CLI; the
+Streamlit app does this automatically on startup — see
+[Running the Application](#running-the-application)):
 
 ```powershell
 python -m database.init_db
@@ -325,6 +328,14 @@ Streamlit (Spanish UI):
 ```powershell
 streamlit run streamlit_app.py
 ```
+
+The Streamlit app prepares its own database automatically on startup
+(`database.bootstrap.ensure_sample_database()`) if it isn't already
+initialized and seeded, so the two `database.init_db` /
+`database.seed_db` commands above aren't strictly required before
+running it — this is what lets it work on a fresh Streamlit Community
+Cloud deployment. The CLI does not bootstrap itself and still needs the
+database prepared first.
 
 ## Example Questions
 
@@ -386,6 +397,46 @@ checks and the most recent result.
   agent behavior against a live model, and are run deliberately rather
   than on every `pytest` invocation.
 
+## Deployment
+
+The app is ready to deploy to [Streamlit Community
+Cloud](https://streamlit.io/cloud). It has not been deployed yet, so no
+live URL exists.
+
+| Setting | Value |
+|---|---|
+| Repository | `fernandezulises66-svg/ai-sql-data-agent` |
+| Branch | `main` |
+| Main file path (entrypoint) | `streamlit_app.py` |
+| Python version (Advanced settings) | 3.13, to match the development environment |
+
+**Database.** `data/ecommerce.db` is intentionally not committed (see
+`.gitignore`) — a fresh deployment clones the repository without it.
+Before rendering anything else, `streamlit_app.py` calls
+`database.bootstrap.ensure_sample_database()`, which creates the schema
+and populates the same deterministic sample dataset
+(`database/seed_db.py`, fixed random seed) a local developer would
+otherwise generate by running `python -m database.init_db` and
+`python -m database.seed_db` themselves. This is safe on every app
+restart: both steps are idempotent, so no data is duplicated and an
+already-seeded database is left untouched.
+
+**Secrets.** This app reads configuration from environment variables —
+no code reads `st.secrets` directly. Streamlit Community Cloud exposes
+root-level entries from its Secrets settings as environment variables
+automatically, so no extra secret-handling code is needed. In the
+deployed app's Secrets settings, add:
+
+```toml
+OPENAI_API_KEY = "..."
+OPENAI_MODEL = "gpt-4o-mini"
+DATABASE_PATH = "data/ecommerce.db"
+```
+
+Never commit a real API key. `.streamlit/secrets.toml` is listed in
+`.gitignore`, so a local copy used to test secrets won't be committed by
+accident either.
+
 ## Limitations / Future Improvements
 
 Current limitations:
@@ -394,7 +445,7 @@ Current limitations:
 - Single-agent architecture (no multi-agent orchestration)
 - No conversational memory — each question is an independent agent run
 - No authentication
-- Not deployed; runs locally only
+- Deployment-ready, but not yet deployed (see [Deployment](#deployment))
 
 Possible future extensions:
 
