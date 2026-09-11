@@ -21,6 +21,11 @@ needs no extra bookkeeping table or "seed version" flag, and it is
 sufficient because this seeder's only job is to populate a fresh database
 once. To regenerate the dataset from scratch, delete the database file (or
 delete rows from all four tables) and re-run the seeder.
+
+That check-then-act sequence is also made safe against *concurrent*
+seeders (e.g. two Streamlit Community Cloud workers bootstrapping the
+same fresh database at the same time) — see seed_database()'s docstring
+for how.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ import random
 import sqlite3
 from datetime import datetime
 
-from database.init_db import get_connection, get_database_path, init_db
+from database.init_db import get_database_path, init_db
 
 SEED = 42
 YEAR = 2024
@@ -254,54 +259,93 @@ def seed_database(database_path: str | None = None, seed: int = SEED) -> bool:
     Returns True if data was inserted, False if seeding was skipped
     because the database already contained data (see the idempotency
     strategy documented at the top of this module).
+
+    Concurrency
+    -----------
+    "Check whether already seeded, then insert" is a classic
+    check-then-act race: without extra locking, two processes
+    bootstrapping the same fresh database at the same time (e.g. two
+    Streamlit Community Cloud workers starting up together) can both see
+    an empty `customers` table and both attempt to insert the same
+    deterministic rows, raising `UNIQUE constraint failed:
+    customers.email`.
+
+    To make that sequence atomic with respect to other seeders, this
+    function opens its own connection in manual-transaction mode and
+    starts it with an explicit ``BEGIN IMMEDIATE`` *before* checking
+    whether the database already has data. Unlike a normal deferred
+    transaction (which only takes SQLite's write lock lazily, at the
+    first actual write), ``BEGIN IMMEDIATE`` acquires that lock right
+    away. A concurrent process doing the same thing therefore blocks at
+    its own ``BEGIN IMMEDIATE`` until this transaction commits or rolls
+    back (the connection's ``timeout`` makes it wait rather than fail
+    immediately with "database is locked"). By the time a second process
+    gets the lock, the first has already committed, so the second
+    process's own check now correctly sees existing data and skips
+    seeding — instead of racing to insert the same rows twice.
     """
     database_path = database_path or get_database_path()
     init_db(database_path)
 
-    connection = get_connection(database_path)
+    # isolation_level=None (autocommit) hands full control of
+    # transaction boundaries to the explicit BEGIN/COMMIT/ROLLBACK
+    # statements below, so they can't conflict with sqlite3's own
+    # implicit transaction handling. The generous timeout lets a
+    # concurrent seeder wait for the lock instead of failing outright.
+    connection = sqlite3.connect(database_path, timeout=30.0)
+    connection.isolation_level = None
+    connection.execute("PRAGMA foreign_keys = ON;")
     try:
-        if _database_has_data(connection):
-            return False
+        connection.execute("BEGIN IMMEDIATE;")
+        try:
+            if _database_has_data(connection):
+                connection.rollback()
+                return False
 
-        rng = random.Random(seed)
+            rng = random.Random(seed)
 
-        customers = _generate_customers(rng)
-        connection.executemany(
-            "INSERT INTO customers (first_name, last_name, email, city) "
-            "VALUES (?, ?, ?, ?)",
-            customers,
-        )
-        # Tables were confirmed empty above, so AUTOINCREMENT ids are
-        # assigned sequentially starting at 1, matching insertion order.
-        customer_ids = list(range(1, len(customers) + 1))
+            customers = _generate_customers(rng)
+            connection.executemany(
+                "INSERT INTO customers (first_name, last_name, email, city) "
+                "VALUES (?, ?, ?, ?)",
+                customers,
+            )
+            # Tables were confirmed empty above, so AUTOINCREMENT ids are
+            # assigned sequentially starting at 1, matching insertion order.
+            customer_ids = list(range(1, len(customers) + 1))
 
-        products = _generate_products()
-        connection.executemany(
-            "INSERT INTO products (name, category, price, stock) "
-            "VALUES (?, ?, ?, ?)",
-            products,
-        )
-        product_rows = [
-            (index, name, category, price, PRODUCTS[index - 1][3])
-            for index, (name, category, price, _stock) in enumerate(products, start=1)
-        ]
+            products = _generate_products()
+            connection.executemany(
+                "INSERT INTO products (name, category, price, stock) "
+                "VALUES (?, ?, ?, ?)",
+                products,
+            )
+            product_rows = [
+                (index, name, category, price, PRODUCTS[index - 1][3])
+                for index, (name, category, price, _stock) in enumerate(products, start=1)
+            ]
 
-        orders, order_items = _generate_orders_and_items(
-            rng, customer_ids, product_rows
-        )
-        connection.executemany(
-            "INSERT INTO orders (customer_id, order_date, status) "
-            "VALUES (?, ?, ?)",
-            orders,
-        )
-        connection.executemany(
-            "INSERT INTO order_items (order_id, product_id, quantity, unit_price) "
-            "VALUES (?, ?, ?, ?)",
-            order_items,
-        )
+            orders, order_items = _generate_orders_and_items(
+                rng, customer_ids, product_rows
+            )
+            connection.executemany(
+                "INSERT INTO orders (customer_id, order_date, status) "
+                "VALUES (?, ?, ?)",
+                orders,
+            )
+            connection.executemany(
+                "INSERT INTO order_items (order_id, product_id, quantity, unit_price) "
+                "VALUES (?, ?, ?, ?)",
+                order_items,
+            )
 
-        connection.commit()
-        return True
+            connection.commit()
+            return True
+        except BaseException:
+            # Safe here because BEGIN IMMEDIATE above is known to have
+            # succeeded, so a transaction is definitely active to roll back.
+            connection.rollback()
+            raise
     finally:
         connection.close()
 

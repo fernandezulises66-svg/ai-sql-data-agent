@@ -6,6 +6,7 @@ mocking beyond isolating each test to its own tmp_path database.
 """
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from database.bootstrap import ensure_sample_database
@@ -103,3 +104,20 @@ def test_ensure_sample_database_returns_the_resolved_path(tmp_path):
     resolved = ensure_sample_database(db_path)
 
     assert resolved == db_path
+
+
+def test_ensure_sample_database_handles_concurrent_bootstrap_calls(tmp_path):
+    """Simulates several Streamlit workers bootstrapping the same fresh
+    database at the same time — the real-world scenario this whole
+    concurrency fix exists for."""
+    db_path = str(tmp_path / "concurrent_bootstrap.db")
+    assert not Path(db_path).exists()
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(ensure_sample_database, db_path) for _ in range(5)]
+        # .result() re-raises any exception (e.g. a UNIQUE constraint
+        # failure), so this fails loudly if the race isn't prevented.
+        resolved_paths = [future.result() for future in futures]
+
+    assert all(path == db_path for path in resolved_paths)
+    assert _row_counts(db_path)["customers"] == 100

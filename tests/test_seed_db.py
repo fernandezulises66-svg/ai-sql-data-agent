@@ -1,4 +1,5 @@
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -147,6 +148,85 @@ def test_seeding_twice_does_not_duplicate_records(tmp_path):
     assert first_run_inserted is True
     assert second_run_inserted is False
     assert counts_after_first_run == counts_after_second_run
+
+
+# ---------------------------------------------------------------------------
+# Concurrency: two (or more) seeders racing to bootstrap the same fresh
+# database, simulating e.g. two Streamlit Community Cloud workers starting
+# up together. seed_database() opens its own connection per call, so
+# threads with independent connections faithfully exercise the same
+# SQLite file-locking path that separate OS processes would.
+# ---------------------------------------------------------------------------
+
+
+def _all_table_counts(db_path: str) -> dict:
+    connection = get_connection(db_path)
+    try:
+        return {
+            table: _count(connection, table)
+            for table in ("customers", "products", "orders", "order_items")
+        }
+    finally:
+        connection.close()
+
+
+def test_concurrent_seed_calls_do_not_raise_unique_constraint_errors(tmp_path):
+    db_path = str(tmp_path / "concurrent.db")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(seed_database, db_path) for _ in range(2)]
+        # .result() re-raises any exception the thread hit (e.g. a
+        # UNIQUE constraint failure), so this fails loudly if the race
+        # is not actually prevented.
+        results = [future.result() for future in futures]
+
+    assert sorted(results) == [False, True]
+
+
+def test_concurrent_seed_calls_produce_exactly_one_deterministic_dataset(tmp_path):
+    db_path = str(tmp_path / "concurrent.db")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(seed_database, db_path) for _ in range(2)]
+        for future in futures:
+            future.result()
+
+    counts = _all_table_counts(db_path)
+    assert counts["customers"] == NUM_CUSTOMERS
+    assert counts["products"] == 30
+    assert MIN_ORDERS <= counts["orders"] <= MAX_ORDERS
+    assert counts["order_items"] > 0
+
+
+def test_concurrent_seeding_matches_sequential_seeding_row_counts(tmp_path):
+    """Proves concurrency doesn't duplicate orders/order_items either,
+    by comparing against a plain single sequential seed of the same
+    deterministic dataset."""
+    sequential_db_path = str(tmp_path / "sequential.db")
+    seed_database(sequential_db_path)
+    sequential_counts = _all_table_counts(sequential_db_path)
+
+    concurrent_db_path = str(tmp_path / "concurrent.db")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(seed_database, concurrent_db_path) for _ in range(2)]
+        for future in futures:
+            future.result()
+    concurrent_counts = _all_table_counts(concurrent_db_path)
+
+    assert concurrent_counts == sequential_counts
+
+
+def test_higher_concurrency_still_seeds_exactly_once(tmp_path):
+    """Five simultaneous bootstrap attempts against one fresh database."""
+    db_path = str(tmp_path / "many_concurrent.db")
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(seed_database, db_path) for _ in range(5)]
+        results = [future.result() for future in futures]
+
+    assert results.count(True) == 1
+    assert results.count(False) == 4
+    assert _all_table_counts(db_path)["customers"] == NUM_CUSTOMERS
 
 
 # ---------------------------------------------------------------------------
