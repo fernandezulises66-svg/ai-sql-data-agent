@@ -28,8 +28,11 @@ database's actual schema into a structured, LLM-friendly description.
 An AI Data Analyst Agent (`agent/data_analyst_agent.py`), built on the
 OpenAI Agents SDK, now answers natural-language business questions by
 combining those two tools — it can be tried from the terminal via
-`python app.py`. No user interface (Streamlit) has been implemented yet.
-Development proceeds incrementally, one feature per iteration.
+`python app.py` (add `--debug` to see the SQL it ran). A lightweight
+end-to-end evaluation suite (`evals/`, run via `python -m evals.run_evals`)
+checks the agent's real behavior against representative questions. No
+user interface (Streamlit) has been implemented yet. Development
+proceeds incrementally, one feature per iteration.
 
 ## Project Structure
 
@@ -45,7 +48,13 @@ ai-sql-data-agent/
 ├── tools/                  # Agent tools
 │   ├── sql_tool.py         # Safe, read-only SQL validation and execution
 │   └── schema_tool.py      # Database schema introspection for prompts
-├── tests/                   # pytest test suite
+├── evals/                  # End-to-end agent evaluation suite (real API calls)
+│   ├── eval_cases.py        # Representative business questions + metadata
+│   ├── ground_truth.py      # Trusted SQL computing objective expected answers
+│   ├── checks.py            # Small, transparent pass/fail checks
+│   ├── runner.py            # Runs cases against the agent and grades them
+│   └── run_evals.py         # CLI: python -m evals.run_evals
+├── tests/                   # pytest test suite (mocked, no real API calls)
 ├── data/                    # Local database files (not committed)
 ├── .env.example             # Template for required environment variables
 └── requirements.txt
@@ -323,6 +332,79 @@ the SQL. Debug output only ever shows *observable tool activity* — the
 query text and its outcome — never the model's internal reasoning or
 chain-of-thought, which the OpenAI Agents SDK does not expose to this
 application in the first place.
+
+## Agent Evaluation
+
+Unit tests (`tests/`) validate deterministic application logic — SQL
+validation, schema introspection, seeding, agent wiring — with mocks and
+never touch the OpenAI API. They can't tell you whether the *agent*
+actually answers a real business question correctly. The `evals/`
+package fills that gap with a small, transparent evaluation suite that
+runs representative questions through the real agent and grades its
+end-to-end behavior. It is intentionally not a unit-test replacement,
+and it is never run automatically by `pytest`.
+
+- `evals/eval_cases.py` — 10 representative cases (revenue, categories,
+  customers, monthly trends, aggregations, a status breakdown, a
+  category comparison, a multi-JOIN question, one question the schema
+  cannot answer, and one general/conversational question). Each case is
+  just a question plus metadata — never a hardcoded full answer.
+- `evals/ground_truth.py` — trusted SQL, written by hand for this suite
+  and kept completely separate from the agent's own instructions,
+  computes the objective expected answer (a top product, a revenue
+  figure, ...) directly from the live database. Ground truth is never
+  computed by asking the AI agent.
+- `evals/checks.py` — small, explainable, rule-based checks (no
+  LLM-as-a-judge): did the agent use `run_sql_query` when it should
+  have (and *not* when it shouldn't)? Do the expected entity names
+  appear in the answer? Does a number close enough to the expected
+  value (2% or $0.50, whichever is larger) appear? For the unsupported
+  question, does the answer hedge instead of inventing a number?
+- `evals/runner.py` — runs each case, times it, and grades it against
+  those checks into an `EvalResult` (`case_id`, `passed`, whether/how
+  many times the SQL tool was used, `execution_time_ms`, the final
+  answer, and a plain-English `failure_reason` when it fails).
+
+Run it for real:
+
+```bash
+python -m evals.run_evals
+```
+
+**This calls the real OpenAI API once per case and consumes API usage** —
+exactly like `python app.py` does. It needs `OPENAI_API_KEY` set and the
+database initialized and seeded first:
+
+```bash
+copy .env.example .env
+# edit .env and set OPENAI_API_KEY
+python -m database.init_db
+python -m database.seed_db
+python -m evals.run_evals
+```
+
+Example report:
+
+```
+AI DATA AGENT EVALUATION
+
+PASS  top_products_revenue
+PASS  top_category_revenue
+PASS  top_customers_spending
+FAIL  unsupported_question
+      -> Answer does not clearly acknowledge that this cannot be answered...
+...
+
+Score: 9/10 (90%)
+Average agent execution time: 1840.3 ms
+Total SQL tool calls: 9
+```
+
+Unit tests for the evaluation framework itself
+(`tests/test_evals.py`) never call the real API: `run_case`/`run_all`
+always take a mocked `agent_runner` in tests, and ground-truth SQL is
+verified against a small hand-built temporary database with exactly
+known expected values.
 
 Run the test suite:
 
