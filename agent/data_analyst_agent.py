@@ -126,6 +126,10 @@ plainly instead of guessing.
 can understand: summarize the finding, not the SQL. Mention relevant \
 limitations (e.g. a status filter you applied, a truncated result) when \
 they matter to the answer.
+- Always respond in the same language the user's question was written \
+in (e.g. a Spanish question gets a Spanish answer, an English question \
+gets an English answer), regardless of the language of the schema or \
+this prompt.
 
 DATABASE SCHEMA
 {schema_text}

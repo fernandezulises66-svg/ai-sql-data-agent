@@ -80,6 +80,15 @@ def test_agent_instructions_mention_key_business_rules(seeded_db_path):
     assert "run_sql_query" in agent_obj.instructions
 
 
+def test_agent_instructions_require_matching_the_question_language(seeded_db_path):
+    agent_obj = build_data_analyst_agent(seeded_db_path)
+
+    instructions_lower = agent_obj.instructions.lower()
+    assert "same language" in instructions_lower
+    assert "spanish" in instructions_lower
+    assert "english" in instructions_lower
+
+
 def test_agent_instructions_do_not_hardcode_seeded_business_answers(seeded_db_path):
     agent_obj = build_data_analyst_agent(seeded_db_path)
 
