@@ -26,19 +26,21 @@ SQL execution layer (`tools/sql_tool.py`) validates and runs analytical
 SQL against that database, and `tools/schema_tool.py` introspects the
 database's actual schema into a structured, LLM-friendly description.
 An AI Data Analyst Agent (`agent/data_analyst_agent.py`), built on the
-OpenAI Agents SDK, now answers natural-language business questions by
-combining those two tools — it can be tried from the terminal via
-`python app.py` (add `--debug` to see the SQL it ran). A lightweight
-end-to-end evaluation suite (`evals/`, run via `python -m evals.run_evals`)
-checks the agent's real behavior against representative questions. No
-user interface (Streamlit) has been implemented yet. Development
-proceeds incrementally, one feature per iteration.
+OpenAI Agents SDK, now answers natural-language business questions in
+English or Spanish by combining those two tools — it can be tried from
+the terminal via `python app.py` (add `--debug` to see the SQL it ran),
+or from a Streamlit web UI via `streamlit run streamlit_app.py`. A
+lightweight end-to-end evaluation suite (`evals/`, run via
+`python -m evals.run_evals`) checks the agent's real behavior against
+representative questions. Development proceeds incrementally, one
+feature per iteration.
 
 ## Project Structure
 
 ```
 ai-sql-data-agent/
-├── app.py                 # Terminal entry point for the AI agent
+├── app.py                 # Terminal (CLI) entry point for the AI agent
+├── streamlit_app.py        # Streamlit web UI for the AI agent
 ├── agent/
 │   └── data_analyst_agent.py  # Builds and runs the AI Data Analyst Agent
 ├── database/               # Database setup and access
@@ -332,6 +334,46 @@ the SQL. Debug output only ever shows *observable tool activity* — the
 query text and its outcome — never the model's internal reasoning or
 chain-of-thought, which the OpenAI Agents SDK does not expose to this
 application in the first place.
+
+## Streamlit Interface
+
+🟢 Implemented. `streamlit_app.py` is a web UI for the same agent — a
+thin presentation layer that calls the existing `run_data_agent()` API
+(`agent/data_analyst_agent.py`) and renders its result; it does not
+reimplement agent construction, SQL execution, or schema introspection.
+The terminal CLI (`app.py`) keeps working unchanged alongside it.
+
+Run it locally:
+
+```bash
+streamlit run streamlit_app.py
+```
+
+The page opens with a title, a short description, and a note that
+responses are generated from real SQL queries, that database access is
+strictly read-only, and that the data is fictional sample data. Type a
+business question — **in English or Spanish** — into the form and click
+**Ask** (or pick one of the built-in example questions, in both
+languages, which fill in the box for you) to get an answer from the
+live agent.
+
+Each answer has an optional **"View SQL details"** expander — the same
+observability data the CLI's `--debug` mode shows (query text, rows
+returned, truncation, execution time, and any error), never the model's
+internal reasoning. If the agent didn't need to query the database (a
+general/conversational question), it says so instead. Previous
+questions in the session are kept in a simple, collapsible history for
+convenience; this is UI-only — each question is still an independent
+agent run, with no conversation memory added to the agent itself.
+
+The sidebar summarizes the tech stack and architecture highlights
+(schema introspection, read-only SQL execution, validation, tool
+calling, multilingual responses, observability, evaluations) for a
+technical reviewer skimming the project.
+
+Missing configuration (`OPENAI_API_KEY`), a missing/invalid database, or
+an agent/API failure are shown as a Streamlit error message — never a
+raw traceback.
 
 ## Agent Evaluation
 

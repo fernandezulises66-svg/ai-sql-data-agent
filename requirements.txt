@@ -1,7 +1,6 @@
 # Dependencies for the AI SQL Data Analyst Agent.
-# Additional dependencies (Streamlit, etc.) will be added in later
-# iterations as those features are implemented.
 
 pytest>=8.0
 openai-agents>=0.22.0
 python-dotenv>=1.0
+streamlit>=1.30
