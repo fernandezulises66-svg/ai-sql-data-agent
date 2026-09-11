@@ -18,10 +18,11 @@ business-oriented answers.
 
 ## Current Status
 
-🚧 Early scaffold stage. The project structure has been initialized.
-No database schema, AI agent logic, or user interface has been
-implemented yet. Development proceeds incrementally, one feature per
-iteration.
+🚧 In development. The relational database schema (customers, products,
+orders, order_items) is implemented and initializable via
+`database/init_db.py`. No AI agent logic, OpenAI integration, sample
+data, or user interface has been implemented yet. Development proceeds
+incrementally, one feature per iteration.
 
 ## Project Structure
 
@@ -29,8 +30,9 @@ iteration.
 ai-sql-data-agent/
 ├── app.py                 # Entry point (placeholder)
 ├── agent/                 # AI agent logic (not yet implemented)
-├── database/               # Database setup and access (not yet implemented)
-│   └── init_db.py
+├── database/               # Database setup and access
+│   ├── schema.sql          # SQLite schema: customers, products, orders, order_items
+│   └── init_db.py          # Creates the SQLite database from schema.sql
 ├── tools/                  # Agent tools, e.g. SQL validation (not yet implemented)
 ├── tests/                   # pytest test suite
 ├── data/                    # Local database files (not committed)
@@ -48,3 +50,25 @@ copy .env.example .env
 ```
 
 Fill in `.env` with real values locally. Never commit `.env`.
+
+## Database
+
+Initialize the SQLite database (creates it at `DATABASE_PATH`, or
+`data/ecommerce.db` by default, if it doesn't already exist):
+
+```bash
+python -m database.init_db
+```
+
+Inspect it with the `sqlite3` CLI:
+
+```bash
+sqlite3 data/ecommerce.db ".tables"
+sqlite3 data/ecommerce.db ".schema"
+```
+
+Run the test suite:
+
+```bash
+pytest
+```
